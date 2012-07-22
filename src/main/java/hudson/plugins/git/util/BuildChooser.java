@@ -12,7 +12,10 @@ import hudson.plugins.git.Revision;
 
 import java.io.IOException;
 import java.io.Serializable;
+
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 
 /**
  * Interface defining an API to choose which revisions ought to be
@@ -37,7 +40,25 @@ public abstract class BuildChooser implements ExtensionPoint, Describable<BuildC
     public final String getDisplayName() {
         return getDescriptor().getDisplayName();
     }
-    
+
+    /**
+     * Get a list of revisions that are candidates to be built.
+     * May be an empty set.
+     * @param isPollCall true if this method is called from pollChanges.
+     * @param singleBranch contains the name of a single branch to be built
+     *        this will be non-null only in the simple case, in advanced
+     *        cases with multiple repositories and/or branches specified
+     *        then this value will be null.
+     * @return the candidate revision.
+     *
+     * @throws IOException
+     * @throws GitException
+     */
+    public abstract Collection<Revision> getCandidateRevisions(boolean isPollCall, String singleBranch,
+                               IGitAPI git, TaskListener listener, List<BuildData> buildDataList) throws GitException, IOException;
+
+
+
     /**
      * Get a list of revisions that are candidates to be built.
      * May be an empty set.

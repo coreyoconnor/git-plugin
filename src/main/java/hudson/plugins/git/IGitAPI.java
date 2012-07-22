@@ -71,6 +71,7 @@ public interface IGitAPI {
     List<IndexEntry> lsTree(String treeIsh) throws GitException;
 
     List<ObjectId> revListBranch(String branchId) throws GitException;
+    List<ObjectId> revList(String... extraArgs) throws GitException;
     List<ObjectId> revListAll() throws GitException;
 
     String describe(String commitIsh) throws GitException;

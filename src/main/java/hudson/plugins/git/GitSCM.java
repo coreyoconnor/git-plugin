@@ -601,10 +601,14 @@ public class GitSCM extends SCM implements Serializable {
             return PollingResult.BUILD_NOW;
         }
 
-        final BuildData buildData = fixNull(getBuildData(lastBuild, false));
+        final List<BuildData> buildData = fixNull(getBuildDataList(lastBuild));
 
-        if (buildData != null && buildData.lastBuild != null) {
-            listener.getLogger().println("[poll] Last Built Revision: " + buildData.lastBuild.revision);
+        if (buildData != null) {
+            for(BuildData bd : buildData) {
+                if(bd.lastBuild != null) {
+                    listener.getLogger().println("[poll] Last Built Revision: " + bd.lastBuild.revision);
+                }
+            }
         }
 
         final String singleBranch = getSingleBranch(lastBuild);
@@ -623,12 +627,12 @@ public class GitSCM extends SCM implements Serializable {
             String gitRepo = getParamExpandedRepos(lastBuild).get(0).getURIs().get(0).toString();
             String headRevision = git.getHeadRev(gitRepo, getBranches().get(0).getName());
 
-            if(buildData.lastBuild.getRevision().getSha1String().equals(headRevision)) {
-                return PollingResult.NO_CHANGES;
-            } else {
-                return PollingResult.BUILD_NOW;
+            for(BuildData bd : buildData) {
+                if(bd.lastBuild.getRevision().getSha1String().equals(headRevision)) {
+                    return PollingResult.NO_CHANGES;
+                }
             }
-
+            return PollingResult.BUILD_NOW;
         }
 
         final String gitExe;
@@ -700,6 +704,15 @@ public class GitSCM extends SCM implements Serializable {
         });
 
         return pollChangesResult ? PollingResult.SIGNIFICANT : PollingResult.NO_CHANGES;
+    }
+
+    private List<BuildData> fixNull(List<BuildData> bdl) {
+      List<BuildData> retval = new ArrayList<BuildData>();
+      for(BuildData bd : bdl) {
+        retval.add(fixNull(bd));
+      }
+
+      return retval;
     }
 
     private BuildData fixNull(BuildData bd) {
@@ -924,10 +937,10 @@ public class GitSCM extends SCM implements Serializable {
 
         final String buildnumber = "jenkins-" + projectName + "-" + buildNumber;
 
-        final BuildData buildData = getBuildData(build.getPreviousBuild(), true);
+        final List<BuildData> buildDataList = getBuildDataList(build.getPreviousBuild());
 
-        if (buildData.lastBuild != null) {
-            listener.getLogger().println("Last Built Revision: " + buildData.lastBuild.revision);
+        if (buildDataList.size() > 0 && buildDataList.get(0).lastBuild != null) {
+            listener.getLogger().println("Last Built Revision: " + buildDataList.get(0).lastBuild.revision);
         }
 
         EnvVars tempEnvironment = build.getEnvironment(listener);
@@ -966,16 +979,13 @@ public class GitSCM extends SCM implements Serializable {
         final RevisionParameterAction rpa = build.getAction(RevisionParameterAction.class);
 
         final Revision revToBuild = workingDirectory.act(new FileCallable<Revision>() {
-
             private static final long serialVersionUID = 1L;
-
             public Revision invoke(File localWorkspace, VirtualChannel channel)
                     throws IOException {
                 FilePath ws = new FilePath(localWorkspace);
                 final PrintStream log = listener.getLogger();
                 log.println("Checkout:" + ws.getName() + " / " + ws.getRemote() + " - " + ws.getChannel());
                 IGitAPI git = new GitAPI(gitExe, ws, listener, environment);
-
                 if (wipeOutWorkspace) {
                     log.println("Wiping out workspace first.");
                     try {
@@ -984,25 +994,19 @@ public class GitSCM extends SCM implements Serializable {
                         // I don't really care if this fails.
                     }
                 }
-
                 if (git.hasGitRepo()) {
-                    // It's an update
-
                     if (paramRepos.size() == 1)
                         log.println("Fetching changes from 1 remote Git repository");
                     else
                         log.println(MessageFormat
                                 .format("Fetching changes from {0} remote Git repositories",
                                         paramRepos));
-
                     boolean fetched = false;
-
                     for (RemoteConfig remoteRepository : paramRepos) {
                         if (fetchFrom(git, listener, remoteRepository)) {
                             fetched = true;
                         }
                     }
-
                     if (!fetched) {
                         listener.error("Could not fetch from any repository");
                         throw new GitException("Could not fetch from any repository");
@@ -1014,11 +1018,8 @@ public class GitSCM extends SCM implements Serializable {
                             git.prune(remoteRepository);
                         }
                     }
-
                 } else {
-
                     log.println("Cloning the remote Git repository");
-
                     // Go through the repositories, trying to clone from one
                     //
                     boolean successfullyCloned = false;
@@ -1036,14 +1037,12 @@ public class GitSCM extends SCM implements Serializable {
                             log.println("Trying next repository");
                         }
                     }
-
                     if (!successfullyCloned) {
                         listener.error("Could not clone repository");
                         throw new GitException("Could not clone");
                     }
 
                     boolean fetched = false;
-
                     // Also do a fetch
                     for (RemoteConfig remoteRepository : paramRepos) {
                         try {
@@ -1055,15 +1054,12 @@ public class GitSCM extends SCM implements Serializable {
                                     + " / " + remoteRepository.getName()
                                     + " - could be unavailable. Continuing anyway.");
                             listener.error(" (Underlying report) : " + e.getMessage());
-
                         }
                     }
-
                     if (!fetched) {
                         listener.error("Could not fetch from any repository");
                         throw new GitException("Could not fetch from any repository");
                     }
-
                     if (getClean()) {
                         log.println("Cleaning workspace");
                         git.clean();
@@ -1073,17 +1069,18 @@ public class GitSCM extends SCM implements Serializable {
                         }
                     }
                 }
-
                 if (parentLastBuiltRev != null) {
                     return parentLastBuiltRev;
                 }
-
                 if (rpa != null) {
                     return rpa.toRevision(git);
                 }
-
+                BuildData bd = null;
+                if(buildDataList.size () > 0) {
+                    bd = buildDataList.get(0);
+                }
                 Collection<Revision> candidates = buildChooser.getCandidateRevisions(
-                        false, singleBranch, git, listener, buildData);
+                        false, singleBranch, git, listener, bd);
                 if (candidates.size() == 0) {
                     return null;
                 }
@@ -1139,7 +1136,7 @@ public class GitSCM extends SCM implements Serializable {
                                     + buildNumber);
                         }
 
-                        buildData.saveBuild(new Build(revToBuild, buildNumber, Result.FAILURE));
+                        buildDataList.get(0).saveBuild(new Build(revToBuild, buildNumber, Result.FAILURE));
                         throw new AbortException("Branch not suitable for integration as it does not merge cleanly");
                     }
 
@@ -1154,11 +1151,18 @@ public class GitSCM extends SCM implements Serializable {
                         // Tag the successful merge
                         git.tag(buildnumber, "Jenkins Build #" + buildNumber);
                     }
-
-                    computeChangeLog(git, revToBuild, listener, buildData, changelogFile);
-
+                    
+                    BuildData bd = new BuildData(getScmName());
+                    for(BuildData buildData : buildDataList) {
+                      if(computeChangeLog(git, revToBuild, listener, buildData, changelogFile)) {
+                          bd = buildData;
+                          break;
+                      }
+                    }
+                    System.out.println("------");
+                    
                     Build build = new Build(revToBuild, buildNumber, null);
-                    buildData.saveBuild(build);
+                    bd.saveBuild(build);
                     GitUtils gu = new GitUtils(listener, git);
                     build.mergeRevision = gu.getRevisionForSHA1(target);
                     if (getClean()) {
@@ -1170,7 +1174,7 @@ public class GitSCM extends SCM implements Serializable {
                     }
 
                     // Fetch the diffs into the changelog file
-                    return buildData;
+                    return bd;
                 }
             }));
         } else {
@@ -1229,13 +1233,27 @@ public class GitSCM extends SCM implements Serializable {
                         // Tag the successful merge
                         git.tag(buildnumber, "Jenkins Build #" + buildNumber);
                     }
+                    
+                    System.out.println("<<<<<<<<<<<<<< NO MERGE >>>>>>>>>>>>>>");
 
-                    computeChangeLog(git, revToBuild, listener, buildData,changelogFile);
+                    BuildData chosenBuildData = new BuildData(getScmName());
+                    if(buildDataList.size() > 0) {
+                        chosenBuildData = buildDataList.get(0);
+                    }
 
-                    buildData.saveBuild(new Build(revToBuild, buildNumber, null));
-
+                    for(BuildData buildData : buildDataList) {
+                      if(computeChangeLog(git, revToBuild, listener, buildData,changelogFile)) {
+                        chosenBuildData = buildData;
+                        break;
+                      }
+                    }
+                    System.out.println("-------");
+                    
+                    if(chosenBuildData != null)  {
+                        chosenBuildData.saveBuild(new Build(revToBuild, buildNumber, null));
+                    }
                     // Fetch the diffs into the changelog file
-                    return buildData;
+                    return chosenBuildData;
                 }
             }));
         }
@@ -1256,18 +1274,20 @@ public class GitSCM extends SCM implements Serializable {
      *      Information that captures what we did during the last build. We need this for changelog,
      *      or else we won't know where to stop.
      */
-    private void computeChangeLog(IGitAPI git, Revision revToBuild, BuildListener listener, BuildData buildData, FilePath changelogFile) throws IOException, InterruptedException {
+    private boolean computeChangeLog(IGitAPI git, Revision revToBuild, BuildListener listener, BuildData buildData, FilePath changelogFile) throws IOException, InterruptedException {
         int histories = 0;
-
+        boolean chosen = false;
         PrintStream out = new PrintStream(changelogFile.write());
         try {
             for (Branch b : revToBuild.getBranches()) {
                 Build lastRevWas = buildChooser.prevBuildForChangelog(b.getName(), buildData, git);
                 if (lastRevWas != null) {
                     if (git.isCommitInRepo(lastRevWas.getSHA1().name())) {
+                        chosen = true;
                         putChangelogDiffs(git, b.name, lastRevWas.getSHA1().name(), revToBuild.getSha1().name(), out);
                         histories++;
                     } else {
+                        out.println("Could not record history. Previous build's commit, " + lastRevWas.getSHA1().name() + ", does not exist in the current repository.");
                         listener.getLogger().println("Could not record history. Previous build's commit, " + lastRevWas.getSHA1().name()
                                 + ", does not exist in the current repository.");
                     }
@@ -1276,14 +1296,16 @@ public class GitSCM extends SCM implements Serializable {
                 }
             }
         } catch (GitException ge) {
-            out.println("Unable to retrieve changeset");
+            System.out.println("Unable to retrieve changeset: " + ge.getMessage());
+            ge.printStackTrace();
         } finally {
             IOUtils.closeQuietly(out);
         }
-
         if (histories > 1) {
             listener.getLogger().println("Warning : There are multiple branch changesets here");
         }
+
+        return chosen;
     }
 
     public void buildEnvVars(AbstractBuild<?, ?> build, java.util.Map<String, String> env) {
@@ -1307,6 +1329,7 @@ public class GitSCM extends SCM implements Serializable {
 
     private void putChangelogDiffs(IGitAPI git, String branchName, String revFrom,
             String revTo, PrintStream fos) throws IOException {
+        System.out.println("Changes in branch " + branchName + ", between " + revFrom + " and " + revTo);
         fos.println("Changes in branch " + branchName + ", between " + revFrom + " and " + revTo);
         git.changelog(revFrom, revTo, fos);
     }
@@ -1592,6 +1615,33 @@ public class GitSCM extends SCM implements Serializable {
     public PreBuildMergeOptions getMergeOptions() {
         return mergeOptions;
     }
+
+    /**
+     * Look back as far as needed to find a valid list of BuildData.  BuildData
+     * may not be recorded if an exception occurs in the plugin logic.
+     * @param build
+     * @return the last recorded build data in list form. There could
+     *         potentially be more than one build data for separate repos.
+     */
+    public List<BuildData> getBuildDataList(Run build) {
+        List<BuildData> buildData = new ArrayList<BuildData>();
+        while (build != null) {
+            List<BuildData> buildDataList = build.getActions(BuildData.class);
+            for (BuildData bd : buildDataList) {
+                if (bd != null && sameScm(bd.getScmName(), scmName)) {
+                    buildData.add(bd);
+                    System.out.println(bd);
+                }
+            }
+            if (buildData.size() > 0) {
+                break;
+            }
+            build = build.getPreviousBuild();
+        }
+        System.out.println("************");
+        return buildData;
+    }
+
 
     /**
      * Look back as far as needed to find a valid BuildData.  BuildData

@@ -41,8 +41,116 @@ public class DefaultBuildChooser extends BuildChooser {
      * @throws GitException
      */
     public Collection<Revision> getCandidateRevisions(boolean isPollCall, String singleBranch,
+                                                      IGitAPI git, TaskListener listener, List<BuildData> buildDataList)
+        throws GitException, IOException {
+
+        // if the branch name contains more wildcards then the simple usecase
+        // does not apply and we need to skip to the advanced usecase
+        if (singleBranch == null || singleBranch.contains("*"))
+            return getAdvancedCandidateRevisions(isPollCall,listener,new GitUtils(listener,git),buildDataList.get(0));
+
+        // check if we're trying to build a specific commit
+        // this only makes sense for a build, there is no
+        // reason to poll for a commit
+        if (!isPollCall && singleBranch.matches("[0-9a-f]{6,40}")) {
+            try {
+                ObjectId sha1 = git.revParse(singleBranch);
+                Revision revision = new Revision(sha1);
+                revision.getBranches().add(new Branch("detached", sha1));
+                verbose(listener,"Will build the detached SHA1 {0}",sha1);
+                return Collections.singletonList(revision);
+            } catch (GitException e) {
+                // revision does not exist, may still be a branch
+                // for example a branch called "badface" would show up here
+                verbose(listener, "Not a valid SHA1 {0}", singleBranch);
+            }
+        }
+
+        // if it doesn't contain '/' then it could be either a tag or an unqualified branch
+        if (!singleBranch.contains("/")) {
+            // the 'branch' could actually be a tag:
+            Set<String> tags = git.getTagNames(singleBranch);
+            if(tags.size() == 0) {
+                // its not a tag, so lets fully qualify the branch
+                String repository = gitSCM.getRepositories().get(0).getName();
+                singleBranch = repository + "/" + singleBranch;
+                verbose(listener, "{0} is not a tag. Qualifying with the repository {1} a a branch", singleBranch, repository);
+            }
+        }
+
+        try {
+            ObjectId sha1 = git.revParse(singleBranch);
+            verbose(listener, "rev-parse {0} -> {1}", singleBranch, sha1);
+
+            // if polling for changes don't select something that has
+            // already been built as a build candidate
+            if (isPollCall) {
+                boolean hasBeenBuilt = false;
+                for(BuildData buildData : buildDataList) {
+                    hasBeenBuilt = hasBeenBuilt || buildData.hasBeenBuilt(sha1);
+                }
+                if(hasBeenBuilt) {
+                    verbose(listener, "{0} has already been built", sha1);
+                    return emptyList();
+                }
+            }
+
+            verbose(listener, "Found a new commit {0} to be built on {1}", sha1, singleBranch);
+            Revision revision = new Revision(sha1);
+            revision.getBranches().add(new Branch(singleBranch, sha1));
+            return Collections.singletonList(revision);
+            /*
+            // calculate the revisions that are new compared to the last build
+            List<Revision> candidateRevs = new ArrayList<Revision>();
+            List<ObjectId> allRevs = git.revListAll(); // index 0 contains the newest revision
+            if (data != null && allRevs != null) {
+                Revision lastBuiltRev = data.getLastBuiltRevision();
+                if (lastBuiltRev == null) {
+                    return Collections.singletonList(objectId2Revision(singleBranch, sha1));
+                }
+                int indexOfLastBuildRev = allRevs.indexOf(lastBuiltRev.getSha1());
+                if (indexOfLastBuildRev == -1) {
+                    // mhmmm ... can happen when branches are switched.
+                    return Collections.singletonList(objectId2Revision(singleBranch, sha1));
+                }
+                List<ObjectId> newRevisionsSinceLastBuild = allRevs.subList(0, indexOfLastBuildRev);
+                // translate list of ObjectIds into list of Revisions
+                for (ObjectId objectId : newRevisionsSinceLastBuild) {
+                    candidateRevs.add(objectId2Revision(singleBranch, objectId));
+                }
+            }
+            if (candidateRevs.isEmpty()) {
+                return Collections.singletonList(objectId2Revision(singleBranch, sha1));
+            }
+            return candidateRevs;
+            */
+        } catch (GitException e) {
+            // branch does not exist, there is nothing to build
+            verbose(listener, "Failed to rev-parse: {0}", singleBranch);
+            return emptyList();
+        }
+    }
+
+
+    /**
+     * Determines which Revisions to build.
+     *
+     * If only one branch is chosen and only one repository is listed, then
+     * just attempt to find the latest revision number for the chosen branch.
+     *
+     * If multiple branches are selected or the branches include wildcards, then
+     * use the advanced usecase as defined in the getAdvancedCandidateRevisons
+     * method.
+     *
+     * @throws IOException
+     * @throws GitException
+     */
+    public Collection<Revision> getCandidateRevisions(boolean isPollCall, String singleBranch,
                                                       IGitAPI git, TaskListener listener, BuildData data)
         throws GitException, IOException {
+
+        System.out.println("isPollCall => " + isPollCall);
+        System.out.println("singleBranch => " + singleBranch);
 
         verbose(listener,"getCandidateRevisions({0},{1},,,{2}) considering branches to build",isPollCall,singleBranch,data);
 
